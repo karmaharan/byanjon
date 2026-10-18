@@ -2,7 +2,7 @@
 var API=(window.BY_API||"").replace(/\/$/,""),$=function(s,r){return(r||document).querySelector(s)};
 var esc=function(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})};
 var rs=function(p){return"\u20B9"+(p/100).toFixed(p%100?2:0)};
-var CFG={delivery_fee_paise:0,min_order_paise:0},MENUMAP={},cart={},geo={},track=null,ws=null,poll=null,tick=null,pingT=null;
+var CFG={delivery_fee_paise:0,min_order_paise:0},OPEN=true,SM=null,SKNOWN=false,snT=null,MENUMAP={},cart={},geo={},track=null,ws=null,poll=null,tick=null,pingT=null;
 function api(path,o){o=o||{};var h={"Content-Type":"application/json"};if(o.gt)h["X-Guest-Token"]=o.gt;
  return fetch(API+path,{method:o.method||"GET",headers:h,body:o.body?JSON.stringify(o.body):undefined}).then(function(r){return r.json().catch(function(){return{}}).then(function(d){if(!r.ok)throw new Error(typeof d.detail==="string"?d.detail:(d.detail&&d.detail[0]&&d.detail[0].msg)||"Something went wrong");return d})})}
 // ---- menu prices
@@ -11,16 +11,50 @@ api("/menu").then(function(d){var by={};d.categories.forEach(function(c){by[c.na
  // admin panel is the source of truth: names, descriptions, availability and prices come from the API
  (window.__MENU||[]).forEach(function(m){var s=m.en==="Today's Kitchen"?(d.featured.length?d.featured:null):(by[m.en]?by[m.en].items:null);if(s)m.items=s.map(function(i){return[i.name_en,i.name_bn,i.description]})});
  window.__refresh&&window.__refresh()}).catch(function(){});
-api("/config").then(function(c){CFG=c}).catch(function(){});
+api("/config").then(function(c){CFG=c;c.store&&applyStore(c.store)}).catch(function(){});
+
+// ---- store open/closed (admin panel is the source of truth; orders already placed are never affected)
+var sn=document.createElement("div");sn.id="sn";sn.setAttribute("role","status");sn.setAttribute("aria-live","polite");
+sn.innerHTML='<i class="sd"></i><div class="sx"><b></b><span></span></div><button type="button" aria-label="Dismiss">\u00D7</button>';document.body.appendChild(sn);
+function sget(){try{return sessionStorage.getItem("by_sn")}catch(e){return null}}function sset(v){try{sessionStorage.setItem("by_sn",v)}catch(e){}}
+function skey(){return(OPEN?"1":"0")+"|"+(SM||"")}
+function hideNote(remember){clearTimeout(snT);sn.classList.remove("on");if(remember)sset(skey())}
+sn.querySelector("button").onclick=function(){hideNote(true)};
+function showNote(force,wasClosed){clearTimeout(snT);
+ if(OPEN&&!SM&&!wasClosed){hideNote();return}
+ if(!force&&sget()===skey())return;
+ var b=$("b",sn),t=$("span",sn);sn.className=OPEN?"open":"shut";
+ if(OPEN){b.textContent=SM?"\u09B0\u09BE\u09A8\u09CD\u09A8\u09BE\u0998\u09B0 \u0996\u09CB\u09B2\u09BE":"\u09B0\u09BE\u09A8\u09CD\u09A8\u09BE\u0998\u09B0 \u0996\u09CB\u09B2\u09BE \u00B7 We\u2019re open again";t.textContent=SM||"Order away \u2014 the kitchen is taking orders."}
+ else{b.textContent="\u09B0\u09BE\u09A8\u09CD\u09A8\u09BE\u0998\u09B0 \u098F\u0996\u09A8 \u09AC\u09A8\u09CD\u09A7 \u00B7 Not taking orders";t.textContent=SM||"The menu is open to browse \u2014 please check back soon."}
+ requestAnimationFrame(function(){sn.classList.add("on")});
+ if(OPEN)snT=setTimeout(function(){hideNote(true)},SM?11000:6000)}
+function ctas(){document.querySelectorAll("[data-order]").forEach(function(a){var t=null;for(var n=a.firstChild;n;n=n.nextSibling)if(n.nodeType===3&&n.nodeValue.trim()){t=n;break}
+ if(!t)return;if(a.dataset.o==null)a.dataset.o=t.nodeValue;t.nodeValue=OPEN?a.dataset.o:(a.closest(".hd")?"Closed":"Closed \u00B7 View menu");a.classList.toggle("shut",!OPEN)})}
+function menuNote(){var n=$("#shutnote"),mn=$("#menu");if(!mn)return;
+ if(OPEN){n&&n.remove();return}
+ if(!n){n=document.createElement("div");n.id="shutnote";var tb=$("#tabs");tb?tb.parentNode.insertBefore(n,tb):mn.appendChild(n)}
+ n.innerHTML='<b class="bn">\u09B0\u09BE\u09A8\u09CD\u09A8\u09BE\u0998\u09B0 \u098F\u0996\u09A8 \u09AC\u09A8\u09CD\u09A7</b><span>'+esc(SM||"We\u2019re not taking orders right now \u2014 browse the menu and come back soon.")+'</span>'}
+function gate(){if(track)return;var g=$("#go");if(!g)return;var n=$("#cn");
+ if(!OPEN){if(!n){n=document.createElement("div");n.id="cn";n.className="cn";var h=$("h3",P);h&&h.parentNode.insertBefore(n,h.nextSibling)}
+  n.innerHTML='<b>Kitchen is closed right now</b>'+(SM?'<br>'+esc(SM):'<br>Your cart is saved \u2014 you can order as soon as we reopen.');g.classList.add("off");g.textContent="Closed right now"}
+ else{n&&n.remove();g.classList.remove("off");g.textContent="Place order (COD)"}}
+function applyStore(st){if(!st||typeof st.is_open!=="boolean")return;var was=OPEN,wasKnown=SKNOWN,msg=st.message||null;
+ if(wasKnown&&was===st.is_open&&SM===msg)return;
+ OPEN=st.is_open;SM=msg;SKNOWN=true;ctas();menuNote();barUpd();dr.classList.contains("on")&&gate();
+ var first=!wasKnown,flip=wasKnown&&was!==OPEN;
+ if(first){if(!OPEN||SM)setTimeout(function(){showNote(false)},2600)}  // let the hero intro play first
+ else showNote(flip||false,flip&&OPEN)}
+function syncStore(){return fetch(API+"/store",{cache:"no-store"}).then(function(r){return r.ok?r.json():null}).then(applyStore).catch(function(){})}
+setInterval(syncStore,45000);document.addEventListener("visibilitychange",function(){document.hidden||syncStore()});
 // ---- cart
 function cnt(){var n=0,t=0;for(var k in cart){n+=cart[k].q;t+=cart[k].q*cart[k].p}return{n:n,t:t}}
 var bar=document.createElement("div");bar.id="cbar";document.body.appendChild(bar);
 var dr=document.createElement("div");dr.id="dr";dr.innerHTML='<div class="p"></div>';document.body.appendChild(dr);
 var P=$(".p",dr);
-window.__after=function(){barUpd()};function barUpd(){var c=cnt();bar.className=c.n&&!track?"on":"";bar.innerHTML='<span>'+c.n+' item'+(c.n>1?'s':'')+'</span><span>'+rs(c.t)+' \u00B7 Checkout \u2192</span>';
- document.querySelectorAll(".add").forEach(function(b){var m=MENUMAP[b.dataset.n];b.classList.toggle("on",!!(m&&cart[m.id]));b.textContent=m&&cart[m.id]?"Added "+cart[m.id].q:"Add"})}
-document.addEventListener("click",function(e){var a=e.target.closest(".add");if(a){e.preventDefault();var m=MENUMAP[a.dataset.n];if(!m)return;var l=cart[m.id]||(cart[m.id]={id:m.id,n:m.name_en,p:m.price_paise,q:0});if(l.q<20)l.q++;barUpd();return}
- var o=e.target.closest("[data-order]");if(o){e.preventDefault();if(track)return open();if(cnt().n)return open();var mn=$("#menu");mn&&mn.scrollIntoView({behavior:"smooth"})}});
+window.__after=function(){barUpd()};function barUpd(){var c=cnt();bar.className=c.n&&!track&&OPEN?"on":"";bar.innerHTML='<span>'+c.n+' item'+(c.n>1?'s':'')+'</span><span>'+rs(c.t)+' \u00B7 Checkout \u2192</span>';
+ document.querySelectorAll(".add").forEach(function(b){var m=MENUMAP[b.dataset.n];b.classList.toggle("shut",!OPEN);b.classList.toggle("on",OPEN&&!!(m&&cart[m.id]));b.textContent=!OPEN?"Closed":m&&cart[m.id]?"Added "+cart[m.id].q:"Add"})}
+document.addEventListener("click",function(e){var a=e.target.closest(".add");if(a){e.preventDefault();if(!OPEN){showNote(true);return}var m=MENUMAP[a.dataset.n];if(!m)return;var l=cart[m.id]||(cart[m.id]={id:m.id,n:m.name_en,p:m.price_paise,q:0});if(l.q<20)l.q++;barUpd();return}
+ var o=e.target.closest("[data-order]");if(o){e.preventDefault();if(track)return open();if(!OPEN){var m2=$("#menu");m2&&m2.scrollIntoView({behavior:"smooth"});showNote(true);return}if(cnt().n)return open();var mn=$("#menu");mn&&mn.scrollIntoView({behavior:"smooth"})}});
 bar.onclick=function(){open()};dr.onclick=function(e){if(e.target===dr)close()};
 function open(){dr.classList.add("on");track?viewTrack():viewCart()}function close(){dr.classList.remove("on")}
 // ---- checkout
@@ -38,14 +72,14 @@ function viewCart(){var c=cnt(),fee=CFG.delivery_fee_paise,L="";
  $("#gps").onclick=function(){var g=$("#gm");if(!navigator.geolocation){g.textContent="GPS not available";return}g.textContent="Locating\u2026";
   navigator.geolocation.getCurrentPosition(function(p){geo={lat:p.coords.latitude,lng:p.coords.longitude};g.textContent="GPS locked \u2713 (OpenStreetMap)";
    api("/geo/reverse?lat="+geo.lat+"&lng="+geo.lng).then(function(r){if(!$("#fa").value)$("#fa").value=r.display_name}).catch(function(){})},function(){g.textContent="Location denied \u2014 type your address"},{enableHighAccuracy:true,timeout:12000})};
- $("#go").onclick=place}
-function place(){var er=$("#er"),b=$("#go");er.textContent="";var v=function(i){return $("#"+i).value.trim()};
+ $("#go").onclick=place;gate()}
+function place(){var er=$("#er"),b=$("#go");er.textContent="";if(!OPEN){gate();return}var v=function(i){return $("#"+i).value.trim()};
  if(!v("fn")||!v("fp")||(!v("fa")&&geo.lat==null)){er.textContent="Name, mobile and address (or GPS) are required";return}
  localStorage.setItem("by_f",JSON.stringify({fn:v("fn"),fp:v("fp"),fe:v("fe")}));b.textContent="Placing\u2026";
  var body={items:Object.keys(cart).map(function(k){return{item_id:cart[k].id,qty:cart[k].q}}),name:v("fn"),phone:v("fp"),address:v("fa")||null,kitchen_note:v("fk")||null,delivery_note:v("fd")||null};
  if(v("fe"))body.email=v("fe");if(geo.lat!=null){body.lat=geo.lat;body.lng=geo.lng}
  api("/orders",{method:"POST",body:body}).then(function(o){track={code:o.code,gt:o.guest_token};localStorage.setItem("by_order",JSON.stringify(track));cart={};barUpd();show(o);connect()})
- .catch(function(e){er.textContent=e.message;b.textContent="Place order (COD)"})}
+ .catch(function(e){er.textContent=e.message;b.textContent="Place order (COD)";syncStore().then(gate)})}
 // ---- tracking
 var STEPS=["PLACED","APPROVED","PREPARING","READY","OUT_FOR_DELIVERY","ARRIVED","OTP_VERIFIED","PAYMENT_COLLECTED","DELIVERED"];
 var TXT={PLACED:["Waiting for kitchen","\u09B0\u09BE\u09A8\u09CD\u09A8\u09BE\u0998\u09B0\u09C7\u09B0 \u0985\u09AA\u09C7\u0995\u09CD\u09B7\u09BE"],APPROVED:["Order accepted","\u0997\u09CD\u09B0\u09B9\u09A3 \u0995\u09B0\u09BE \u09B9\u09DF\u09C7\u099B\u09C7"],PREPARING:["Cooking now","\u09B0\u09BE\u09A8\u09CD\u09A8\u09BE \u099A\u09B2\u099B\u09C7"],READY:["Food is ready","\u0996\u09BE\u09AC\u09BE\u09B0 \u09A4\u09C8\u09B0\u09BF"],OUT_FOR_DELIVERY:["On the way","\u09B0\u0993\u09A8\u09BE \u09B9\u09DF\u09C7\u099B\u09C7"],ARRIVED:["Rider arrived \u2014 share OTP","\u09B0\u09BE\u0987\u09A1\u09BE\u09B0 \u098F\u09B8\u09C7\u099B\u09C7"],OTP_VERIFIED:["OTP verified \u2014 pay cash","\u0985\u09CD\u09AF\u09BE\u09AE\u09CB\u09A6\u09BF\u09A4"],PAYMENT_COLLECTED:["Payment received","\u099F\u09BE\u0995\u09BE \u09AA\u09C7\u09DF\u09C7\u099B\u09BF"],DELIVERED:["Delivered. Enjoy!","\u09AA\u09CC\u0981\u099B\u09C7 \u0997\u09C7\u099B\u09C7"],REJECTED:["Kitchen declined","\u09AC\u09BE\u09A4\u09BF\u09B2"],EXPIRED:["Kitchen busy \u2014 try again","\u09B8\u09AE\u09DF \u09B6\u09C7\u09B7"],CANCELLED:["Cancelled","\u09AC\u09BE\u09A4\u09BF\u09B2"],FAILED:["Delivery failed","\u09AC\u09CD\u09AF\u09B0\u09CD\u09A5"]};
